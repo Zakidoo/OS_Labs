@@ -23,7 +23,8 @@
 #include <string.h>
 #include <readline/readline.h>
 #include <readline/history.h>
-
+#include <sys/types.h>
+#include <sys/wait.h>
 // The <unistd.h> header is your gateway to the OS's process management facilities.
 #include <unistd.h>
 
@@ -32,6 +33,7 @@
 static void print_cmd(Command *cmd);
 static void print_pgm(Pgm *p);
 void stripwhite(char *);
+void execute_program(Pgm *pgm, int background);
 
 int main(void)
 {
@@ -52,7 +54,7 @@ int main(void)
       if (parse(line, &cmd) == 1)
       {
         // Print the parsed command
-        print_cmd(&cmd);
+        execute_program(cmd.pgm, cmd.background);
       }
       else
       {
@@ -63,7 +65,6 @@ int main(void)
     // Free the input buffer
     free(line);
   }
-
   return 0;
 }
 
@@ -83,7 +84,29 @@ static void print_cmd(Command *cmd_list)
   print_pgm(cmd_list->pgm);
   printf("------------------------------\n");
 }
+void execute_program(Pgm *pgm, int background)
+{
+  pid_t pid = fork();
 
+  if (pid < 0)
+  {
+    perror("fork");
+    return;
+  }
+
+  if (pid == 0)
+  {
+    execvp(pgm->pgmlist[0], pgm->pgmlist);
+
+    perror("execvp");
+    exit(EXIT_FAILURE);
+  }
+
+  if (!background)
+  {
+    waitpid(pid, NULL, 0);
+  }
+}
 /* Print a linked list of Pgm structures.
  *
  * Helper function, no need to change. It may be useful to study for inspiration.
@@ -110,7 +133,6 @@ static void print_pgm(Pgm *p)
     printf("]\n");
   }
 }
-
 
 /* Strip whitespace from the start and end of a string.
  *
