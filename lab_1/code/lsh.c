@@ -25,6 +25,8 @@
 #include <readline/history.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <errno.h>
+
 // The <unistd.h> header is your gateway to the OS's process management facilities.
 #include <unistd.h>
 
@@ -32,6 +34,7 @@
 
 static void print_cmd(Command *cmd);
 static void print_pgm(Pgm *p);
+static void execute_simple_command(Command *cmd);
 void stripwhite(char *);
 void execute_program(Pgm *pgm, int background);
 
@@ -39,8 +42,14 @@ int main(void)
 {
   for (;;)
   {
-    char *line;
-    line = readline("> ");
+    char *line = readline("> ");
+
+    // Ctrl-D causes readline() to return NULL
+    if (line == NULL)
+    {
+      printf("\n");
+      break;
+    }
 
     // Remove leading and trailing whitespace from the line
     stripwhite(line);
@@ -73,6 +82,77 @@ int main(void)
  *
  * Helper function, no need to change. Might be useful to study as inspiration.
  */
+
+ static void execute_simple_command(Command *cmd)
+{
+    assert(cmd != NULL);
+    assert(cmd->pgm != NULL);
+
+    Pgm *pgm = cmd->pgm;
+
+    // Pipes will be implemented later.
+    // For now, only allow one program.
+    if (pgm->next != NULL)
+    {
+        fprintf(stderr, "Pipes are not implemented yet\n");
+        return;
+    }
+
+    char **argv = pgm->pgmlist;
+
+    if (argv == NULL || argv[0] == NULL)
+    {
+        return;
+    }
+
+    pid_t pid = fork();
+
+    if (pid < 0)
+    {
+        perror("fork");
+        return;
+    }
+
+    if (pid == 0)
+    {
+        /*
+         * CHILD PROCESS
+         *
+         * execvp searches PATH automatically.
+         * For example:
+         *
+         * ls
+         *
+         * might become /bin/ls.
+         */
+        execvp(argv[0], argv);
+
+        /*
+         * execvp only returns if something went wrong.
+         */
+        perror(argv[0]);
+
+        _exit(EXIT_FAILURE);
+    }
+    else
+    {
+        /*
+         * PARENT PROCESS
+         *
+         * Wait until the child command has finished.
+         */
+        int status;
+
+        while (waitpid(pid, &status, 0) == -1)
+        {
+            if (errno != EINTR)
+            {
+                perror("waitpid");
+                break;
+            }
+        }
+    }
+}
 static void print_cmd(Command *cmd_list)
 {
   printf("------------------------------\n");
