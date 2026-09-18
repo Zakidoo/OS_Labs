@@ -21,24 +21,39 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <signal.h>
 #include <readline/readline.h>
 #include <readline/history.h>
 
 // The <unistd.h> header is your gateway to the OS's process management facilities.
 #include <unistd.h>
+#include <sys/wait.h>
 
 #include "parse.h"
 
 static void print_cmd(Command *cmd);
 static void print_pgm(Pgm *p);
+static void execute_command(Command *cmd);
+static void reap_zombies(void);
 void stripwhite(char *);
+void handler(int sig);
+pid_t current_process=0;
+
 
 int main(void)
 {
   for (;;)
   {
+    reap_zombies(); 
     char *line;
+    signal(SIGINT, handler);
     line = readline("> ");
+    if(line == NULL)
+    {
+      printf("exit\n");
+      //send sighup to all background processes
+      break;
+    }
 
     // Remove leading and trailing whitespace from the line
     stripwhite(line);
@@ -53,6 +68,7 @@ int main(void)
       {
         // Print the parsed command
         print_cmd(&cmd);
+        execute_command(&cmd);
       }
       else
       {
@@ -65,6 +81,40 @@ int main(void)
   }
 
   return 0;
+}
+
+//copilot code for testing
+static void execute_command(Command *cmd)
+{
+  assert(cmd != NULL);
+  assert(cmd->pgm != NULL);
+
+  Pgm *program = cmd->pgm;
+  pid_t child_pid = fork();
+
+  if (child_pid == -1)
+  {
+    perror("fork");
+    return;
+  }
+
+  if (child_pid == 0)
+  {
+    execvp(program->pgmlist[0], program->pgmlist);
+    perror(program->pgmlist[0]);
+    _exit(127);
+  }
+  
+  if (!cmd->background)
+  {
+    current_process = child_pid;
+    int status;
+    if (waitpid(child_pid, &status, 0) == -1)
+    {
+      perror("waitpid");
+    }
+    current_process = 0;
+  }
 }
 
 /*
@@ -137,4 +187,20 @@ void stripwhite(char *string)
   }
 
   string[++i] = '\0';
+}
+static void reap_zombies(void)
+{
+  while (waitpid(-1, NULL, WNOHANG) > 0);
+
+}
+
+void handler(int sig)
+{
+  if (sig == SIGINT)
+  {
+    if (current_process != 0)
+    {
+      kill(current_process, SIGINT);
+    }
+  }
 }
