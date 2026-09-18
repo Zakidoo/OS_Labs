@@ -86,9 +86,19 @@ static void print_cmd(Command *cmd_list)
 }
 void execute_program(Pgm *pgm, int background)
 {
+  if (strcmp(pgm->pgmlist[0], "cd") == 0)
+  {
+    chdir(pgm->pgmlist[1]);
+    return;
+  }
+  else if (strcmp(pgm->pgmlist[0], "exit") == 0)
+  {
+    exit(0);
+  }
   pid_t pid = fork();
 
   if (pid < 0)
+  // Unable to fork
   {
     perror("fork");
     return;
