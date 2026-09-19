@@ -42,6 +42,12 @@ int main(void)
     char *line;
     line = readline("> ");
 
+    if (line == NULL)
+    {
+      printf("\n");
+      break;
+    }
+
     // Remove leading and trailing whitespace from the line
     stripwhite(line);
 
