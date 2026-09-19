@@ -25,6 +25,7 @@
 #include <readline/history.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <signal.h>
 // The <unistd.h> header is your gateway to the OS's process management facilities.
 #include <unistd.h>
 
@@ -37,6 +38,7 @@ void execute_program(Pgm *pgm, int background);
 
 int main(void)
 {
+  signal(SIGINT, SIG_IGN);
   for (;;)
   {
     char *line;
@@ -112,9 +114,11 @@ void execute_program(Pgm *pgm, int background)
 
   if (pid == 0)
   {
-    execvp(pgm->pgmlist[0], pgm->pgmlist);
+    signal(SIGINT, SIG_DFL);
 
+    execvp(pgm->pgmlist[0], pgm->pgmlist);
     perror("execvp");
+
     exit(EXIT_FAILURE);
   }
 
