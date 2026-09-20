@@ -18,6 +18,7 @@
  */
 #include <assert.h>
 #include <ctype.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -37,7 +38,8 @@ static void execute_command(Command *cmd);
 static void reap_zombies(void);
 void stripwhite(char *);
 void handler(int sig);
-pid_t current_process=0;
+static pid_t foreground_pgid = 0;
+static volatile sig_atomic_t starting_foreground = 0;
 
 
 int main(void)
@@ -47,6 +49,7 @@ int main(void)
     reap_zombies(); 
     char *line;
     signal(SIGINT, handler);
+    signal(SIGCHLD, handler);
     line = readline("> ");
     if(line == NULL)
     {
@@ -90,30 +93,67 @@ static void execute_command(Command *cmd)
   assert(cmd->pgm != NULL);
 
   Pgm *program = cmd->pgm;
+  starting_foreground = !cmd->background;
   pid_t child_pid = fork();
 
   if (child_pid == -1)
   {
     perror("fork");
+    starting_foreground = 0;
     return;
   }
 
   if (child_pid == 0)
   {
+    if (signal(SIGINT, SIG_DFL) == SIG_ERR)
+    {
+      perror("signal");
+      _exit(127);
+    }
+
+    if (signal(SIGCHLD, SIG_DFL) == SIG_ERR)
+    {
+      perror("signal");
+      _exit(127);
+    }
+
+    if (setpgid(0, 0) == -1)
+    {
+      perror("setpgid");
+      _exit(127);
+    }
+
     execvp(program->pgmlist[0], program->pgmlist);
     perror(program->pgmlist[0]);
     _exit(127);
   }
+
+  if (setpgid(child_pid, child_pid) == -1)
+  {
+    if (errno != EACCES)
+    {
+      perror("setpgid");
+    }
+  }
   
   if (!cmd->background)
   {
-    current_process = child_pid;
+    foreground_pgid = child_pid;
+    starting_foreground = 0;
     int status;
-    if (waitpid(child_pid, &status, 0) == -1)
+    while (waitpid(child_pid, &status, 0) == -1)
     {
-      perror("waitpid");
+      if (errno != EINTR)
+      {
+        perror("waitpid");
+        break;
+      }
     }
-    current_process = 0;
+    foreground_pgid = 0;
+  }
+  else
+  {
+    starting_foreground = 0;
   }
 }
 
@@ -198,9 +238,13 @@ void handler(int sig)
 {
   if (sig == SIGINT)
   {
-    if (current_process != 0)
+    if (foreground_pgid != 0)
     {
-      kill(current_process, SIGINT);
+      kill(-foreground_pgid, SIGINT);
     }
+  }
+  else if (sig == SIGCHLD && foreground_pgid == 0 && !starting_foreground)
+  {
+    reap_zombies();
   }
 }
