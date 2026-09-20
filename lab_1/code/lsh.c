@@ -86,75 +86,114 @@ int main(void)
   return 0;
 }
 
-//copilot code for testing
 static void execute_command(Command *cmd)
 {
+
   assert(cmd != NULL);
   assert(cmd->pgm != NULL);
-
+  Pgm *programs[20];
   Pgm *program = cmd->pgm;
+  int count = 0;
+
+  while (program != NULL) {
+    programs[count++] = program;
+    program = program->next;
+  }
+
+  for (int i = 0; i < count / 2; i++) {
+    Pgm *tmp = programs[i];
+    programs[i] = programs[count - i - 1];
+    programs[count - i - 1] = tmp;
+  }
+
+  pid_t pgid = 0;
+  int previous_read = -1;
+
   starting_foreground = !cmd->background;
-  pid_t child_pid = fork();
 
-  if (child_pid == -1)
-  {
-    perror("fork");
-    starting_foreground = 0;
-    return;
-  }
+  for (int i = 0; i < count; i++) {
+   if (strcmp(programs[i]->pgmlist[0], "cd") == 0)
+   {
+     chdir(programs[i]->pgmlist[1]);
+     return;
+   }
+   else if (strcmp(programs[i]->pgmlist[0], "exit") == 0)
+   {
+     exit(0);
+   }
+    int current_pipe[2];
 
-  if (child_pid == 0)
-  {
-    if (signal(SIGINT, SIG_DFL) == SIG_ERR)
-    {
-      perror("signal");
-      _exit(127);
+    if (i < count - 1 && pipe(current_pipe) == -1) {
+      perror("pipe");
+      return;
     }
 
-    if (signal(SIGCHLD, SIG_DFL) == SIG_ERR)
-    {
-      perror("signal");
-      _exit(127);
+    pid_t pid = fork();
+
+    if (pid == -1) {
+      perror("fork");
+      return;
     }
 
-    if (setpgid(0, 0) == -1)
-    {
-      perror("setpgid");
-      _exit(127);
-    }
+    if (pid == 0) {
+      if (pgid == 0)
+        setpgid(0, 0);
+      else
+        setpgid(0, pgid);
 
-    execvp(program->pgmlist[0], program->pgmlist);
-    perror(program->pgmlist[0]);
-    _exit(127);
-  }
+      signal(SIGINT, SIG_DFL);
 
-  if (setpgid(child_pid, child_pid) == -1)
-  {
-    if (errno != EACCES)
-    {
-      perror("setpgid");
-    }
-  }
-  
-  if (!cmd->background)
-  {
-    foreground_pgid = child_pid;
-    starting_foreground = 0;
-    int status;
-    while (waitpid(child_pid, &status, 0) == -1)
-    {
-      if (errno != EINTR)
-      {
-        perror("waitpid");
-        break;
+      if (previous_read != -1) {
+        dup2(previous_read, STDIN_FILENO);
+        close(previous_read);
       }
+
+      if (i < count - 1) {
+        close(current_pipe[0]);
+        dup2(current_pipe[1], STDOUT_FILENO);
+        close(current_pipe[1]);
+      }
+
+      execvp(programs[i]->pgmlist[0], programs[i]->pgmlist);
+      perror(programs[i]->pgmlist[0]);
+      _exit(127);
     }
-    foreground_pgid = 0;
+
+    if (pgid == 0)
+      pgid = pid;
+
+    setpgid(pid, pgid);
+
+    if (previous_read != -1)
+      close(previous_read);
+
+    if (i < count - 1) {
+      close(current_pipe[1]);
+      previous_read = current_pipe[0];
+    }
   }
-  else
-  {
-    starting_foreground = 0;
+   if (previous_read != -1)
+    close(previous_read);
+
+  if (!cmd->background)
+    foreground_pgid = pgid;
+  starting_foreground = 0;
+
+  if (!cmd->background) {
+    int status;
+    for (;;) {
+      pid_t waited_pid = waitpid(-pgid, &status, 0);
+      if (waited_pid > 0)
+        continue;
+      if (waited_pid == -1 && errno == EINTR)
+        continue;
+      if (waited_pid == -1 && errno != ECHILD)
+        perror("waitpid");
+      break;
+    }
   }
+  starting_foreground = 0;
+  foreground_pgid = 0;
 }
 
 /*
@@ -243,7 +282,9 @@ void handler(int sig)
       kill(-foreground_pgid, SIGINT);
     }
   }
-  else if (sig == SIGCHLD && foreground_pgid == 0 && !starting_foreground)
+  else if (sig == SIGCHLD &&
+           foreground_pgid == 0 &&
+           !starting_foreground)
   {
     reap_zombies();
   }
