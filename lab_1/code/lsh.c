@@ -25,8 +25,7 @@
 #include <readline/history.h>
 #include <sys/types.h>
 #include <sys/wait.h>
-#include <errno.h>
-
+#include <signal.h>
 // The <unistd.h> header is your gateway to the OS's process management facilities.
 #include <unistd.h>
 
@@ -34,16 +33,17 @@
 
 static void print_cmd(Command *cmd);
 static void print_pgm(Pgm *p);
-static void execute_simple_command(Command *cmd);
 void stripwhite(char *);
+void execute_program(Pgm *pgm, int background);
 
 int main(void)
 {
+  signal(SIGINT, SIG_IGN);
   for (;;)
   {
-    char *line = readline("> ");
+    char *line;
+    line = readline("> ");
 
-    // Ctrl-D causes readline() to return NULL
     if (line == NULL)
     {
       printf("\n");
@@ -61,8 +61,8 @@ int main(void)
       Command cmd;
       if (parse(line, &cmd) == 1)
       {
-        
-        execute_simple_command(&cmd);
+        // Print the parsed command
+        execute_program(cmd.pgm, cmd.background);
       }
       else
       {
@@ -73,7 +73,6 @@ int main(void)
     // Free the input buffer
     free(line);
   }
-
   return 0;
 }
 
@@ -82,77 +81,6 @@ int main(void)
  *
  * Helper function, no need to change. Might be useful to study as inspiration.
  */
-
- static void execute_simple_command(Command *cmd)
-{
-    assert(cmd != NULL);
-    assert(cmd->pgm != NULL);
-
-    Pgm *pgm = cmd->pgm;
-
-    // Pipes will be implemented later.
-    // For now, only allow one program.
-    if (pgm->next != NULL)
-    {
-        fprintf(stderr, "Pipes are not implemented yet\n");
-        return;
-    }
-
-    char **argv = pgm->pgmlist;
-
-    if (argv == NULL || argv[0] == NULL)
-    {
-        return;
-    }
-
-    pid_t pid = fork();
-
-    if (pid < 0)
-    {
-        perror("fork");
-        return;
-    }
-
-    if (pid == 0)
-    {
-        /*
-         * CHILD PROCESS
-         *
-         * execvp searches PATH automatically.
-         * For example:
-         *
-         * ls
-         *
-         * might become /bin/ls.
-         */
-        execvp(argv[0], argv);
-
-        /*
-         * execvp only returns if something went wrong.
-         */
-        perror(argv[0]);
-
-        _exit(EXIT_FAILURE);
-    }
-    else
-    {
-        /*
-         * PARENT PROCESS
-         *
-         * Wait until the child command has finished.
-         */
-        int status;
-
-        while (waitpid(pid, &status, 0) == -1)
-        {
-            if (errno != EINTR)
-            {
-                perror("waitpid");
-                break;
-            }
-        }
-    }
-}
 static void print_cmd(Command *cmd_list)
 {
   printf("------------------------------\n");
@@ -164,7 +92,41 @@ static void print_cmd(Command *cmd_list)
   print_pgm(cmd_list->pgm);
   printf("------------------------------\n");
 }
+void execute_program(Pgm *pgm, int background)
+{
+  if (strcmp(pgm->pgmlist[0], "cd") == 0)
+  {
+    chdir(pgm->pgmlist[1]);
+    return;
+  }
+  else if (strcmp(pgm->pgmlist[0], "exit") == 0)
+  {
+    exit(0);
+  }
+  pid_t pid = fork();
 
+  if (pid < 0)
+  // Unable to fork
+  {
+    perror("fork");
+    return;
+  }
+
+  if (pid == 0)
+  {
+    signal(SIGINT, SIG_DFL);
+
+    execvp(pgm->pgmlist[0], pgm->pgmlist);
+    perror("execvp");
+
+    exit(EXIT_FAILURE);
+  }
+
+  if (!background)
+  {
+    waitpid(pid, NULL, 0);
+  }
+}
 /* Print a linked list of Pgm structures.
  *
  * Helper function, no need to change. It may be useful to study for inspiration.
