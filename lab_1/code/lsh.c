@@ -18,41 +18,52 @@
  */
 #include <assert.h>
 #include <ctype.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <readline/readline.h>
-#include <readline/history.h>
-#include <sys/types.h>
-#include <sys/wait.h>
 #include <signal.h>
 #include <fcntl.h>
+#include <readline/readline.h>
+#include <readline/history.h>
+
 // The <unistd.h> header is your gateway to the OS's process management facilities.
 #include <unistd.h>
+#include <sys/types.h>
+#include <sys/wait.h>
 
 #include "parse.h"
 
 static void print_cmd(Command *cmd);
 static void print_pgm(Pgm *p);
+static void execute_command(Command *cmd);
+static void reap_zombies(void);
 void stripwhite(char *);
-void execute_program(Command *cmd);
+void handler(int sig);
+static pid_t foreground_pgid = 0;
+static volatile sig_atomic_t starting_foreground = 0;
 
 int main(void)
 {
+  // Shell ignores Ctrl-C and terminal-control signals (from branch 1)
   signal(SIGINT, SIG_IGN);
   signal(SIGTTOU, SIG_IGN);
   signal(SIGTTIN, SIG_IGN);
 
+  // Shell gets its own process group and owns the terminal (from branch 1)
   setpgid(0, 0);
   tcsetpgrp(STDIN_FILENO, getpgrp());
+
   for (;;)
   {
+    reap_zombies();
     char *line;
+    signal(SIGCHLD, handler);
     line = readline("> ");
-
     if (line == NULL)
     {
-      printf("\n");
+      printf("exit\n");
+      // send sighup to all background processes
       break;
     }
 
@@ -67,8 +78,7 @@ int main(void)
       Command cmd;
       if (parse(line, &cmd) == 1)
       {
-        // Print the parsed command
-        execute_program(&cmd);
+        execute_command(&cmd);
       }
       else
       {
@@ -79,7 +89,169 @@ int main(void)
     // Free the input buffer
     free(line);
   }
+
   return 0;
+}
+
+static void execute_command(Command *cmd)
+{
+
+  assert(cmd != NULL);
+  assert(cmd->pgm != NULL);
+  Pgm *programs[20];
+  Pgm *program = cmd->pgm;
+  int count = 0;
+
+  // The parser stores programs last-to-first, collect them...
+  while (program != NULL)
+  {
+    programs[count++] = program;
+    program = program->next;
+  }
+
+  // ...and reverse so programs[0] is the first command in the pipeline
+  for (int i = 0; i < count / 2; i++)
+  {
+    Pgm *tmp = programs[i];
+    programs[i] = programs[count - i - 1];
+    programs[count - i - 1] = tmp;
+  }
+
+  pid_t pgid = 0;
+  int previous_read = -1;
+
+  starting_foreground = !cmd->background;
+
+  for (int i = 0; i < count; i++)
+  {
+    if (strcmp(programs[i]->pgmlist[0], "cd") == 0)
+    {
+      chdir(programs[i]->pgmlist[1]);
+      return;
+    }
+    else if (strcmp(programs[i]->pgmlist[0], "exit") == 0)
+    {
+      exit(0);
+    }
+    int current_pipe[2];
+
+    if (i < count - 1 && pipe(current_pipe) == -1)
+    {
+      perror("pipe");
+      return;
+    }
+
+    pid_t pid = fork();
+
+    if (pid == -1)
+    {
+      perror("fork");
+      return;
+    }
+
+    if (pid == 0)
+    {
+      if (pgid == 0)
+        setpgid(0, 0);
+      else
+        setpgid(0, pgid);
+
+      signal(SIGINT, SIG_DFL);
+
+      if (previous_read != -1)
+      {
+        dup2(previous_read, STDIN_FILENO);
+        close(previous_read);
+      }
+
+      if (i < count - 1)
+      {
+        close(current_pipe[0]);
+        dup2(current_pipe[1], STDOUT_FILENO);
+        close(current_pipe[1]);
+      }
+
+      // Input redirection applies to the first program (from branch 1)
+      if (i == 0 && cmd->rstdin != NULL)
+      {
+        int fd = open(cmd->rstdin, O_RDONLY);
+        if (fd < 0)
+        {
+          perror(cmd->rstdin);
+          exit(EXIT_FAILURE);
+        }
+        dup2(fd, STDIN_FILENO);
+        close(fd);
+      }
+
+      // Output redirection applies to the last program (from branch 1)
+      if (i == count - 1 && cmd->rstdout != NULL)
+      {
+        int fd = open(cmd->rstdout, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (fd < 0)
+        {
+          perror(cmd->rstdout);
+          exit(EXIT_FAILURE);
+        }
+        dup2(fd, STDOUT_FILENO);
+        close(fd);
+      }
+
+      execvp(programs[i]->pgmlist[0], programs[i]->pgmlist);
+      perror(programs[i]->pgmlist[0]);
+      _exit(127);
+    }
+
+    if (pgid == 0)
+      pgid = pid;
+
+    setpgid(pid, pgid);
+
+    if (previous_read != -1)
+      close(previous_read);
+
+    if (i < count - 1)
+    {
+      close(current_pipe[1]);
+      previous_read = current_pipe[0];
+    }
+  }
+  if (previous_read != -1)
+    close(previous_read);
+
+  if (!cmd->background)
+    foreground_pgid = pgid;
+  starting_foreground = 0;
+
+  if (!cmd->background)
+  {
+    // Give the terminal to the foreground job (from branch 1)
+    if (isatty(STDIN_FILENO))
+    {
+      tcsetpgrp(STDIN_FILENO, pgid);
+    }
+
+    int status;
+    for (;;)
+    {
+      pid_t waited_pid = waitpid(-pgid, &status, 0);
+      if (waited_pid > 0)
+        continue;
+      if (waited_pid == -1 && errno == EINTR)
+        continue;
+      if (waited_pid == -1 && errno != ECHILD)
+        perror("waitpid");
+      break;
+    }
+
+    // Take the terminal back (from branch 1)
+    if (isatty(STDIN_FILENO))
+    {
+      tcsetpgrp(STDIN_FILENO, getpgrp());
+    }
+  }
+  starting_foreground = 0;
+  foreground_pgid = 0;
 }
 
 /*
@@ -98,83 +270,7 @@ static void print_cmd(Command *cmd_list)
   print_pgm(cmd_list->pgm);
   printf("------------------------------\n");
 }
-//
-void execute_program(Command *cmd)
-{
-  Pgm *pgm = cmd->pgm;
-  int background = cmd->background;
-  if (strcmp(pgm->pgmlist[0], "cd") == 0)
-  {
-    if (pgm->pgmlist[1] != NULL)
-    {
-      if (chdir(pgm->pgmlist[1]) != 0)
-        perror("cd");
-    }
-    return;
-  }
 
-  if (strcmp(pgm->pgmlist[0], "exit") == 0)
-  {
-    exit(0);
-  }
-
-  pid_t pid = fork();
-
-  if (pid < 0)
-  {
-    perror("fork");
-    return;
-  }
-
-  if (pid == 0)
-  {
-    setpgid(0, 0);
-    signal(SIGINT, SIG_DFL);
-
-    if (cmd->rstdin != NULL)
-    {
-      int fd = open(cmd->rstdin, O_RDONLY);
-      if (fd < 0)
-      {
-        perror(cmd->rstdin);
-        exit(EXIT_FAILURE);
-      }
-      dup2(fd, STDIN_FILENO);
-      close(fd);
-    }
-    if (cmd->rstdout != NULL)
-    {
-      int fd = open(cmd->rstdout, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-      if (fd < 0)
-      {
-        perror(cmd->rstdout);
-        exit(EXIT_FAILURE);
-      }
-
-      dup2(fd, STDOUT_FILENO);
-      close(fd);
-    }
-    execvp(pgm->pgmlist[0], pgm->pgmlist);
-
-    perror("execvp");
-    exit(EXIT_FAILURE);
-  }
-  setpgid(pid, pid);
-
-  if (!background)
-  {
-    if (isatty(STDIN_FILENO))
-    {
-      tcsetpgrp(STDIN_FILENO, pid);
-    }
-    waitpid(pid, NULL, 0);
-
-    if (isatty(STDIN_FILENO))
-    {
-      tcsetpgrp(STDIN_FILENO, getpgrp());
-    }
-  }
-}
 /* Print a linked list of Pgm structures.
  *
  * Helper function, no need to change. It may be useful to study for inspiration.
@@ -227,4 +323,20 @@ void stripwhite(char *string)
   }
 
   string[++i] = '\0';
+}
+
+static void reap_zombies(void)
+{
+  while (waitpid(-1, NULL, WNOHANG) > 0)
+    ;
+}
+
+void handler(int sig)
+{
+  if (sig == SIGCHLD &&
+      foreground_pgid == 0 &&
+      !starting_foreground)
+  {
+    reap_zombies();
+  }
 }
