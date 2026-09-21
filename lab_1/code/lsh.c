@@ -60,10 +60,10 @@ int main(void)
     char *line;
     signal(SIGCHLD, handler);
     line = readline("> ");
+    //catches ctrl_d and breaks the loop to exit the shell
     if (line == NULL)
     {
       printf("exit\n");
-      // send sighup to all background processes
       break;
     }
 
@@ -102,14 +102,12 @@ static void execute_command(Command *cmd)
   Pgm *program = cmd->pgm;
   int count = 0;
 
-  // The parser stores programs last-to-first, collect them...
+  // storing the programs and then reversing the list because they come in reverse order
   while (program != NULL)
   {
     programs[count++] = program;
     program = program->next;
   }
-
-  // ...and reverse so programs[0] is the first command in the pipeline
   for (int i = 0; i < count / 2; i++)
   {
     Pgm *tmp = programs[i];
@@ -119,16 +117,26 @@ static void execute_command(Command *cmd)
 
   pid_t pgid = 0;
   int previous_read = -1;
-
+  //foreground flag to indicate if it is a foreground process
   starting_foreground = !cmd->background;
 
   for (int i = 0; i < count; i++)
   {
+    //handle cd
     if (strcmp(programs[i]->pgmlist[0], "cd") == 0)
     {
-      chdir(programs[i]->pgmlist[1]);
+      const char *directory = programs[i]->pgmlist[1];
+      if (directory == NULL)
+      {
+        directory = getenv("HOME");
+      }
+      if (directory == NULL || chdir(directory) == -1)
+      {
+        perror("cd");
+      }
       return;
-    }
+    } 
+    //handle exit
     else if (strcmp(programs[i]->pgmlist[0], "exit") == 0)
     {
       exit(0);
