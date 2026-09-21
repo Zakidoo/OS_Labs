@@ -26,6 +26,7 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <signal.h>
+#include <fcntl.h>
 // The <unistd.h> header is your gateway to the OS's process management facilities.
 #include <unistd.h>
 
@@ -34,11 +35,16 @@
 static void print_cmd(Command *cmd);
 static void print_pgm(Pgm *p);
 void stripwhite(char *);
-void execute_program(Pgm *pgm, int background);
+void execute_program(Command *cmd);
 
 int main(void)
 {
   signal(SIGINT, SIG_IGN);
+  signal(SIGTTOU, SIG_IGN);
+  signal(SIGTTIN, SIG_IGN);
+
+  setpgid(0, 0);
+  tcsetpgrp(STDIN_FILENO, getpgrp());
   for (;;)
   {
     char *line;
@@ -62,7 +68,7 @@ int main(void)
       if (parse(line, &cmd) == 1)
       {
         // Print the parsed command
-        execute_program(cmd.pgm, cmd.background);
+        execute_program(&cmd);
       }
       else
       {
@@ -92,21 +98,29 @@ static void print_cmd(Command *cmd_list)
   print_pgm(cmd_list->pgm);
   printf("------------------------------\n");
 }
-void execute_program(Pgm *pgm, int background)
+//
+void execute_program(Command *cmd)
 {
+  Pgm *pgm = cmd->pgm;
+  int background = cmd->background;
   if (strcmp(pgm->pgmlist[0], "cd") == 0)
   {
-    chdir(pgm->pgmlist[1]);
+    if (pgm->pgmlist[1] != NULL)
+    {
+      if (chdir(pgm->pgmlist[1]) != 0)
+        perror("cd");
+    }
     return;
   }
-  else if (strcmp(pgm->pgmlist[0], "exit") == 0)
+
+  if (strcmp(pgm->pgmlist[0], "exit") == 0)
   {
     exit(0);
   }
+
   pid_t pid = fork();
 
   if (pid < 0)
-  // Unable to fork
   {
     perror("fork");
     return;
@@ -114,17 +128,51 @@ void execute_program(Pgm *pgm, int background)
 
   if (pid == 0)
   {
+    setpgid(0, 0);
     signal(SIGINT, SIG_DFL);
 
-    execvp(pgm->pgmlist[0], pgm->pgmlist);
-    perror("execvp");
+    if (cmd->rstdin != NULL)
+    {
+      int fd = open(cmd->rstdin, O_RDONLY);
+      if (fd < 0)
+      {
+        perror(cmd->rstdin);
+        exit(EXIT_FAILURE);
+      }
+      dup2(fd, STDIN_FILENO);
+      close(fd);
+    }
+    if (cmd->rstdout != NULL)
+    {
+      int fd = open(cmd->rstdout, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+      if (fd < 0)
+      {
+        perror(cmd->rstdout);
+        exit(EXIT_FAILURE);
+      }
 
+      dup2(fd, STDOUT_FILENO);
+      close(fd);
+    }
+    execvp(pgm->pgmlist[0], pgm->pgmlist);
+
+    perror("execvp");
     exit(EXIT_FAILURE);
   }
+  setpgid(pid, pid);
 
   if (!background)
   {
+    if (isatty(STDIN_FILENO))
+    {
+      tcsetpgrp(STDIN_FILENO, pid);
+    }
     waitpid(pid, NULL, 0);
+
+    if (isatty(STDIN_FILENO))
+    {
+      tcsetpgrp(STDIN_FILENO, getpgrp());
+    }
   }
 }
 /* Print a linked list of Pgm structures.
