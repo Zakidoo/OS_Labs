@@ -161,7 +161,7 @@ static void execute_command(Command *cmd)
     // Child process
     if (pid == 0)
     {
-      // Set the process group ID
+      //set the process group ID
       if (pgid == 0)
         setpgid(0, 0);
       else
@@ -364,7 +364,7 @@ static void reap_zombies(void)
   while (waitpid(-1, NULL, WNOHANG) > 0);
 }
 
-// Signal handler for SIGCHLD to reap zombie processes
+//signal handler for SIGCHLD to reap zombie processes
 void handler(int sig)
 {
   if (sig == SIGCHLD &&
