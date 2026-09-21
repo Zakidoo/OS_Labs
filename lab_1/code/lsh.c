@@ -123,7 +123,7 @@ static void execute_command(Command *cmd)
   for (int i = 0; i < count; i++)
   {
     //handle cd
-    if (strcmp(programs[i]->pgmlist[0], "cd") == 0)
+    if (count == 1 && strcmp(programs[i]->pgmlist[0], "cd") == 0)
     {
       const char *directory = programs[i]->pgmlist[1];
       if (directory == NULL)
@@ -136,13 +136,14 @@ static void execute_command(Command *cmd)
       }
       return;
     } 
+    
     //handle exit
-    else if (strcmp(programs[i]->pgmlist[0], "exit") == 0)
+    else if (count == 1 && strcmp(programs[i]->pgmlist[0], "exit") == 0)
     {
       exit(0);
     }
+    //creates the pipe as long as its not the last command
     int current_pipe[2];
-
     if (i < count - 1 && pipe(current_pipe) == -1)
     {
       perror("pipe");
@@ -156,14 +157,15 @@ static void execute_command(Command *cmd)
       perror("fork");
       return;
     }
-
+    // Child process
     if (pid == 0)
     {
+      // Set the process group ID
       if (pgid == 0)
         setpgid(0, 0);
       else
         setpgid(0, pgid);
-
+      //restores the default signal handling for the child processes so that ctrl_c terminates them 
       signal(SIGINT, SIG_DFL);
 
       if (previous_read != -1)
@@ -179,7 +181,6 @@ static void execute_command(Command *cmd)
         close(current_pipe[1]);
       }
 
-      // Input redirection applies to the first program (from branch 1)
       if (i == 0 && cmd->rstdin != NULL)
       {
         int fd = open(cmd->rstdin, O_RDONLY);
@@ -192,7 +193,6 @@ static void execute_command(Command *cmd)
         close(fd);
       }
 
-      // Output redirection applies to the last program (from branch 1)
       if (i == count - 1 && cmd->rstdout != NULL)
       {
         int fd = open(cmd->rstdout, O_WRONLY | O_CREAT | O_TRUNC, 0644);
@@ -205,11 +205,29 @@ static void execute_command(Command *cmd)
         close(fd);
       }
 
+      if (strcmp(programs[i]->pgmlist[0], "cd") == 0)
+      {
+        const char *directory = programs[i]->pgmlist[1];
+        int result = EXIT_SUCCESS;
+        if (directory == NULL)
+          directory = getenv("HOME");
+        if (directory == NULL || chdir(directory) == -1)
+        {
+          perror("cd");
+          result = EXIT_FAILURE;
+        }
+        _exit(result);
+      }
+
+      if (strcmp(programs[i]->pgmlist[0], "exit") == 0)
+        _exit(EXIT_SUCCESS);
+
       execvp(programs[i]->pgmlist[0], programs[i]->pgmlist);
-      perror(programs[i]->pgmlist[0]);
+      fprintf(stderr, "%s: command not found\n", programs[i]->pgmlist[0]);
       _exit(127);
     }
 
+    // Parent process
     if (pgid == 0)
       pgid = pid;
 
@@ -233,7 +251,6 @@ static void execute_command(Command *cmd)
 
   if (!cmd->background)
   {
-    // Give the terminal to the foreground job (from branch 1)
     if (isatty(STDIN_FILENO))
     {
       tcsetpgrp(STDIN_FILENO, pgid);
@@ -252,7 +269,6 @@ static void execute_command(Command *cmd)
       break;
     }
 
-    // Take the terminal back (from branch 1)
     if (isatty(STDIN_FILENO))
     {
       tcsetpgrp(STDIN_FILENO, getpgrp());
@@ -333,12 +349,13 @@ void stripwhite(char *string)
   string[++i] = '\0';
 }
 
+//zombie handling by waiting until all the child processes are done 
 static void reap_zombies(void)
 {
-  while (waitpid(-1, NULL, WNOHANG) > 0)
-    ;
+  while (waitpid(-1, NULL, WNOHANG) > 0);
 }
 
+// Signal handler for SIGCHLD to reap zombie processes
 void handler(int sig)
 {
   if (sig == SIGCHLD &&
