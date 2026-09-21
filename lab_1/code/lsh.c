@@ -122,7 +122,7 @@ static void execute_command(Command *cmd)
 
   for (int i = 0; i < count; i++)
   {
-    //handle cd
+    //handle cd if its the first command in a pipeline
     if (count == 1 && strcmp(programs[i]->pgmlist[0], "cd") == 0)
     {
       const char *directory = programs[i]->pgmlist[1];
@@ -137,7 +137,7 @@ static void execute_command(Command *cmd)
       return;
     } 
     
-    //handle exit
+    //handle exit in the same way 
     else if (count == 1 && strcmp(programs[i]->pgmlist[0], "exit") == 0)
     {
       exit(0);
@@ -150,6 +150,7 @@ static void execute_command(Command *cmd)
       return;
     }
 
+    // forking and handling the error if it fails
     pid_t pid = fork();
 
     if (pid == -1)
@@ -168,19 +169,20 @@ static void execute_command(Command *cmd)
       //restores the default signal handling for the child processes so that ctrl_c terminates them 
       signal(SIGINT, SIG_DFL);
 
+      //connects the result of the previous piped command to the new one
       if (previous_read != -1)
       {
         dup2(previous_read, STDIN_FILENO);
         close(previous_read);
       }
-
+      //forwards the output of the current command to the next one in the pipeline
       if (i < count - 1)
       {
         close(current_pipe[0]);
         dup2(current_pipe[1], STDOUT_FILENO);
         close(current_pipe[1]);
       }
-
+      //input redirection handling
       if (i == 0 && cmd->rstdin != NULL)
       {
         int fd = open(cmd->rstdin, O_RDONLY);
@@ -192,7 +194,7 @@ static void execute_command(Command *cmd)
         dup2(fd, STDIN_FILENO);
         close(fd);
       }
-
+      //output redirection handling
       if (i == count - 1 && cmd->rstdout != NULL)
       {
         int fd = open(cmd->rstdout, O_WRONLY | O_CREAT | O_TRUNC, 0644);
@@ -205,6 +207,7 @@ static void execute_command(Command *cmd)
         close(fd);
       }
 
+      //handle cd and exit in the child process
       if (strcmp(programs[i]->pgmlist[0], "cd") == 0)
       {
         const char *directory = programs[i]->pgmlist[1];
@@ -222,17 +225,20 @@ static void execute_command(Command *cmd)
       if (strcmp(programs[i]->pgmlist[0], "exit") == 0)
         _exit(EXIT_SUCCESS);
 
+      // command executiona and handling if the command is not real
       execvp(programs[i]->pgmlist[0], programs[i]->pgmlist);
       fprintf(stderr, "%s: command not found\n", programs[i]->pgmlist[0]);
       _exit(127);
     }
 
     // Parent process
+    //again process group handling
     if (pgid == 0)
       pgid = pid;
 
     setpgid(pid, pgid);
 
+    // pipeline handling
     if (previous_read != -1)
       close(previous_read);
 
@@ -245,10 +251,12 @@ static void execute_command(Command *cmd)
   if (previous_read != -1)
     close(previous_read);
 
+    //setting the foreground process group id
   if (!cmd->background)
     foreground_pgid = pgid;
   starting_foreground = 0;
 
+   //gives terminal control to the froeground processes
   if (!cmd->background)
   {
     if (isatty(STDIN_FILENO))
@@ -256,6 +264,7 @@ static void execute_command(Command *cmd)
       tcsetpgrp(STDIN_FILENO, pgid);
     }
 
+    //waiting for all the child processes to finish and handling errors
     int status;
     for (;;)
     {
@@ -268,7 +277,7 @@ static void execute_command(Command *cmd)
         perror("waitpid");
       break;
     }
-
+    //take back the terminal
     if (isatty(STDIN_FILENO))
     {
       tcsetpgrp(STDIN_FILENO, getpgrp());
