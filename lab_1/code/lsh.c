@@ -45,12 +45,12 @@ static volatile sig_atomic_t starting_foreground = 0;
 
 int main(void)
 {
-  // Shell ignores Ctrl-C and terminal-control signals (from branch 1)
+  // the shell is set to ignore ctrl-c and terminal-control signals 
   signal(SIGINT, SIG_IGN);
   signal(SIGTTOU, SIG_IGN);
   signal(SIGTTIN, SIG_IGN);
 
-  // Shell gets its own process group and owns the terminal (from branch 1)
+  // the shell gets its own process group and owns the terminal
   setpgid(0, 0);
   tcsetpgrp(STDIN_FILENO, getpgrp());
 
@@ -158,7 +158,7 @@ static void execute_command(Command *cmd)
       perror("fork");
       return;
     }
-    // Child process
+    //child process
     if (pid == 0)
     {
       //set the process group ID
@@ -231,7 +231,7 @@ static void execute_command(Command *cmd)
       _exit(127);
     }
 
-    // Parent process
+    //parent process
     //again process group handling
     if (pgid == 0)
       pgid = pid;
