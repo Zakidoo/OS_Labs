@@ -36,60 +36,78 @@
 
 #define BUS_CAPACITY 3
 
-typedef enum {
+typedef enum
+{
   SEND,
   RECEIVE,
 
   NUM_OF_DIRECTIONS
 } direction_t;
 
-typedef enum {
+typedef enum
+{
   NORMAL,
   PRIORITY,
 
   NUM_OF_PRIORITIES
 } priority_t;
 
-typedef struct {
+typedef struct
+{
   direction_t direction;
   priority_t priority;
   unsigned long transfer_duration;
 } task_t;
 
-void init_bus (void);
-void batch_scheduler (unsigned int num_priority_send,
-                      unsigned int num_priority_receive,
-                      unsigned int num_tasks_send,
-                      unsigned int num_tasks_receive);
+static struct lock bus_lock;
+static struct condition bus_changed;
+static unsigned int active_count;
+static direction_t bus_direction;
+static unsigned int waiting_priority[NUM_OF_DIRECTIONS];
+
+void init_bus(void);
+void batch_scheduler(unsigned int num_priority_send,
+                     unsigned int num_priority_receive,
+                     unsigned int num_tasks_send,
+                     unsigned int num_tasks_receive);
 
 /* Thread function for running a task: Gets a slot, transfers data and finally
  * releases slot */
-static void run_task (void *task_);
+static void run_task(void *task_);
 
 /* WARNING: This function may suspend the calling thread, depending on slot
  * availability */
-static void get_slot (const task_t *task);
+static void get_slot(const task_t *task);
 
 /* Simulates transfering of data */
-static void transfer_data (const task_t *task);
+static void transfer_data(const task_t *task);
 
 /* Releases the slot */
-static void release_slot (const task_t *task);
+static void release_slot(const task_t *task);
 
-void init_bus (void) {
-
-  random_init ((unsigned int)123456789);
-
+void init_bus(void)
+{
+  random_init((unsigned int)123456789);
   /* TODO: Initialize global/static variables,
-     e.g. your condition variables, locks, counters etc */
+    e.g. your condition variables, locks, counters etc */
+  lock_init(&bus_lock);
+  cond_init(&bus_changed);
+
+  active_count = 0;
+  bus_direction = SEND;
+
+  waiting_priority[SEND] = 0;
+  waiting_priority[RECEIVE] = 0;
 }
 
-void batch_scheduler (unsigned int num_priority_send,
-                      unsigned int num_priority_receive,
-                      unsigned int num_tasks_send,
-                      unsigned int num_tasks_receive) {
-  ASSERT (num_tasks_send + num_tasks_receive + num_priority_send +
-             num_priority_receive <= MAX_NUM_OF_TASKS);
+void batch_scheduler(unsigned int num_priority_send,
+                     unsigned int num_priority_receive,
+                     unsigned int num_tasks_send,
+                     unsigned int num_tasks_receive)
+{
+  ASSERT(num_tasks_send + num_tasks_receive + num_priority_send +
+             num_priority_receive <=
+         MAX_NUM_OF_TASKS);
 
   static task_t tasks[MAX_NUM_OF_TASKS] = {0};
 
@@ -100,83 +118,89 @@ void batch_scheduler (unsigned int num_priority_send,
   int j = 0;
 
   /* create priority sender threads */
-  for (unsigned i = 0; i < num_priority_send; i++) {
+  for (unsigned i = 0; i < num_priority_send; i++)
+  {
     tasks[j].direction = SEND;
     tasks[j].priority = PRIORITY;
     tasks[j].transfer_duration = random_ulong() % 244;
 
     total_transfer_dur += tasks[j].transfer_duration;
 
-    snprintf (thread_name, sizeof thread_name, "sender-prio");
-    thread_create (thread_name, PRI_DEFAULT, run_task, (void *)&tasks[j]);
+    snprintf(thread_name, sizeof thread_name, "sender-prio");
+    thread_create(thread_name, PRI_DEFAULT, run_task, (void *)&tasks[j]);
 
     j++;
   }
 
   /* create priority receiver threads */
-  for (unsigned i = 0; i < num_priority_receive; i++) {
+  for (unsigned i = 0; i < num_priority_receive; i++)
+  {
     tasks[j].direction = RECEIVE;
     tasks[j].priority = PRIORITY;
     tasks[j].transfer_duration = random_ulong() % 244;
 
     total_transfer_dur += tasks[j].transfer_duration;
 
-    snprintf (thread_name, sizeof thread_name, "receiver-prio");
-    thread_create (thread_name, PRI_DEFAULT, run_task, (void *)&tasks[j]);
+    snprintf(thread_name, sizeof thread_name, "receiver-prio");
+    thread_create(thread_name, PRI_DEFAULT, run_task, (void *)&tasks[j]);
 
     j++;
   }
 
   /* create normal sender threads */
-  for (unsigned i = 0; i < num_tasks_send; i++) {
+  for (unsigned i = 0; i < num_tasks_send; i++)
+  {
     tasks[j].direction = SEND;
     tasks[j].priority = NORMAL;
-    tasks[j].transfer_duration = random_ulong () % 244;
+    tasks[j].transfer_duration = random_ulong() % 244;
 
     total_transfer_dur += tasks[j].transfer_duration;
 
-    snprintf (thread_name, sizeof thread_name, "sender");
-    thread_create (thread_name, PRI_DEFAULT, run_task, (void *)&tasks[j]);
+    snprintf(thread_name, sizeof thread_name, "sender");
+    thread_create(thread_name, PRI_DEFAULT, run_task, (void *)&tasks[j]);
 
     j++;
   }
 
   /* create normal receiver threads */
-  for (unsigned i = 0; i < num_tasks_receive; i++) {
+  for (unsigned i = 0; i < num_tasks_receive; i++)
+  {
     tasks[j].direction = RECEIVE;
     tasks[j].priority = NORMAL;
     tasks[j].transfer_duration = random_ulong() % 244;
 
     total_transfer_dur += tasks[j].transfer_duration;
 
-    snprintf (thread_name, sizeof thread_name, "receiver");
-    thread_create (thread_name, PRI_DEFAULT, run_task, (void *)&tasks[j]);
+    snprintf(thread_name, sizeof thread_name, "receiver");
+    thread_create(thread_name, PRI_DEFAULT, run_task, (void *)&tasks[j]);
 
     j++;
   }
 
   /* Sleep until all tasks are complete */
-  timer_sleep (2 * total_transfer_dur);
+  timer_sleep(2 * total_transfer_dur);
 }
 
 /* Thread function for the communication tasks */
-void run_task(void *task_) {
+void run_task(void *task_)
+{
   task_t *task = (task_t *)task_;
 
-  get_slot (task);
+  get_slot(task);
 
-  msg ("%s acquired slot", thread_name());
-  transfer_data (task);
+  msg("%s acquired slot", thread_name());
+  transfer_data(task);
 
-  release_slot (task);
+  release_slot(task);
 }
 
-static direction_t other_direction(direction_t this_direction) {
+static direction_t other_direction(direction_t this_direction)
+{
   return this_direction == SEND ? RECEIVE : SEND;
 }
 
-void get_slot (const task_t *task) {
-
+void get_slot(const task_t *task)
+{
   /* TODO: Try to get a slot, respect the following rules:
    *        1. There can be only BUS_CAPACITY tasks using the bus
    *        2. The bus is half-duplex: All tasks using the bus should be either
@@ -188,17 +212,60 @@ void get_slot (const task_t *task) {
    * feel free to schedule priority tasks of the same direction,
    * even if there are priority tasks of the other direction waiting
    */
+  lock_acquire(&bus_lock);
+
+  /* Register priority tasks before checking eligibility. */
+  if (task->priority == PRIORITY)
+  {
+    waiting_priority[task->direction]++;
+  }
+
+  while (active_count >= BUS_CAPACITY ||
+         (active_count > 0 &&
+          bus_direction != task->direction) ||
+         (task->priority == NORMAL &&
+          (waiting_priority[SEND] > 0 ||
+           waiting_priority[RECEIVE] > 0)))
+  {
+    cond_wait(&bus_changed, &bus_lock);
+  }
+
+  /* This priority task is no longer waiting. */
+  if (task->priority == PRIORITY)
+  {
+    waiting_priority[task->direction]--;
+  }
+
+  /* An empty bus adopts the entering task's direction. */
+  if (active_count == 0)
+  {
+    bus_direction = task->direction;
+  }
+
+  active_count++;
+
+  lock_release(&bus_lock);
 }
 
-void transfer_data (const task_t *task) {
+void transfer_data(const task_t *task)
+{
   /* Simulate bus send/receive */
-  timer_sleep (task->transfer_duration);
+  timer_sleep(task->transfer_duration);
 }
 
-void release_slot (const task_t *task) {
-
+void release_slot(const task_t *task)
+{
   /* TODO: Release the slot, think about the actions you need to perform:
    *       - Do you need to notify any waiting task?
    *       - Do you need to increment/decrement any counter?
    */
+  lock_acquire(&bus_lock);
+
+  ASSERT(active_count > 0);
+  active_count--;
+
+  /* Wake waiting threads so they can recheck eligibility. */
+  cond_broadcast(&bus_changed, &bus_lock);
+
+  lock_release(&bus_lock);
 }
