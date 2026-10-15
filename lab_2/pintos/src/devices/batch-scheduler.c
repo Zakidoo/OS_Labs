@@ -36,17 +36,18 @@
 
 #define BUS_CAPACITY 3
 
+
 typedef enum {
   SEND,
   RECEIVE,
-
+  
   NUM_OF_DIRECTIONS
 } direction_t;
 
 typedef enum {
   NORMAL,
   PRIORITY,
-
+  
   NUM_OF_PRIORITIES
 } priority_t;
 
@@ -55,6 +56,12 @@ typedef struct {
   priority_t priority;
   unsigned long transfer_duration;
 } task_t;
+
+static struct lock bus_lock;
+static struct condition bus_cond[NUM_OF_DIRECTIONS][NUM_OF_PRIORITIES];
+static int bus_slots;
+static direction_t bus_direction;
+static int priority_waiting[NUM_OF_DIRECTIONS];
 
 void init_bus (void);
 void batch_scheduler (unsigned int num_priority_send,
@@ -79,7 +86,17 @@ static void release_slot (const task_t *task);
 void init_bus (void) {
 
   random_init ((unsigned int)123456789);
-
+  lock_init (&bus_lock);
+   for (int direction = 0; direction < NUM_OF_DIRECTIONS; direction++) {
+    for (int priority = 0; priority < NUM_OF_PRIORITIES; priority++) {
+      cond_init (&bus_cond[direction][priority]);
+    }
+  }
+  bus_slots = 0;
+  bus_direction = SEND;
+  for (int direction = 0; direction < NUM_OF_DIRECTIONS; direction++) {
+    priority_waiting[direction] = 0;
+  }
   /* TODO: Initialize global/static variables,
      e.g. your condition variables, locks, counters etc */
 }
@@ -188,11 +205,33 @@ void get_slot (const task_t *task) {
    * feel free to schedule priority tasks of the same direction,
    * even if there are priority tasks of the other direction waiting
    */
+   lock_acquire(&bus_lock);
+
+   while(bus_slots >= BUS_CAPACITY || bus_slots > 0 && bus_direction != task->direction || task->priority == NORMAL && priority_waiting[task->direction] > 0) {
+     
+    if (task->priority == PRIORITY) {
+       priority_waiting[task->direction]++;
+     }
+
+    cond_wait(&bus_cond[task->direction][task->priority], &bus_lock);
+
+    if (task->priority == PRIORITY) {
+       priority_waiting[task->direction]--;
+     }
+   }
+   if (bus_slots == 0) {
+     bus_direction = task->direction;
+   }
+
+   bus_slots++;
+   
+   lock_release(&bus_lock);
 }
 
 void transfer_data (const task_t *task) {
   /* Simulate bus send/receive */
   timer_sleep (task->transfer_duration);
+
 }
 
 void release_slot (const task_t *task) {
@@ -201,4 +240,15 @@ void release_slot (const task_t *task) {
    *       - Do you need to notify any waiting task?
    *       - Do you need to increment/decrement any counter?
    */
+   lock_acquire(&bus_lock);
+    
+   bus_slots--;
+    
+   for (int priority = 0; priority < NUM_OF_PRIORITIES; priority++) {
+      for (int direction = 0; direction < NUM_OF_DIRECTIONS; direction++) {
+        cond_signal(&bus_cond[direction][priority], &bus_lock);
+      }
+    }
+   
+  lock_release(&bus_lock);
 }
