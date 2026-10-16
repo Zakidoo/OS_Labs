@@ -61,7 +61,7 @@ static struct lock bus_lock;
 static struct condition bus_cond[NUM_OF_DIRECTIONS][NUM_OF_PRIORITIES];
 static int bus_slots;
 static direction_t bus_direction;
-static int priority_waiting[NUM_OF_DIRECTIONS];
+static int priority_waiting;
 
 void init_bus (void);
 void batch_scheduler (unsigned int num_priority_send,
@@ -94,9 +94,7 @@ void init_bus (void) {
   }
   bus_slots = 0;
   bus_direction = SEND;
-  for (int direction = 0; direction < NUM_OF_DIRECTIONS; direction++) {
-    priority_waiting[direction] = 0;
-  }
+  priority_waiting = 0;
   /* TODO: Initialize global/static variables,
      e.g. your condition variables, locks, counters etc */
 }
@@ -206,19 +204,21 @@ void get_slot (const task_t *task) {
    * even if there are priority tasks of the other direction waiting
    */
    lock_acquire(&bus_lock);
+   
+   
+  if (task->priority == PRIORITY) {
+     priority_waiting++;
+   }
 
-   while(bus_slots >= BUS_CAPACITY || bus_slots > 0 && bus_direction != task->direction || task->priority == NORMAL && priority_waiting[task->direction] > 0) {
-     
-    if (task->priority == PRIORITY) {
-       priority_waiting[task->direction]++;
-     }
+   while(bus_slots >= BUS_CAPACITY || bus_slots > 0 && bus_direction != task->direction || task->priority == NORMAL && priority_waiting > 0) {
 
     cond_wait(&bus_cond[task->direction][task->priority], &bus_lock);
 
-    if (task->priority == PRIORITY) {
-       priority_waiting[task->direction]--;
-     }
+  }
+  if (task->priority == PRIORITY) {
+     priority_waiting--;
    }
+
    if (bus_slots == 0) {
      bus_direction = task->direction;
    }
@@ -244,11 +244,15 @@ void release_slot (const task_t *task) {
     
    bus_slots--;
     
-   for (int priority = 0; priority < NUM_OF_PRIORITIES; priority++) {
-      for (int direction = 0; direction < NUM_OF_DIRECTIONS; direction++) {
-        cond_signal(&bus_cond[direction][priority], &bus_lock);
-      }
-    }
+  cond_signal (&bus_cond[bus_direction][PRIORITY], &bus_lock);
+cond_signal (&bus_cond[other_direction (bus_direction)][PRIORITY], &bus_lock);
+cond_signal (&bus_cond[bus_direction][NORMAL], &bus_lock);
+cond_signal (&bus_cond[other_direction (bus_direction)][NORMAL], &bus_lock);
+  //  for (int direction = 0; direction < NUM_OF_DIRECTIONS; direction++) {
+  //    for (int priority = 0; priority < NUM_OF_PRIORITIES; priority++) {
+  //      cond_signal(&bus_cond[direction][priority], &bus_lock);
+  //     }
+  //   }
    
   lock_release(&bus_lock);
 }
