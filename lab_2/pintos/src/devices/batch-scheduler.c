@@ -243,11 +243,10 @@ void release_slot (const task_t *task) {
    lock_acquire(&bus_lock);
     
    bus_slots--;
-    
-  cond_signal (&bus_cond[bus_direction][PRIORITY], &bus_lock);
-  cond_signal (&bus_cond[other_direction (bus_direction)][PRIORITY], &bus_lock);
-  cond_signal (&bus_cond[bus_direction][NORMAL], &bus_lock);
-  cond_signal (&bus_cond[other_direction (bus_direction)][NORMAL], &bus_lock);
+  for (int direction = 0; direction < NUM_OF_DIRECTIONS; direction++)
+    for (int priority = 0; priority < NUM_OF_PRIORITIES; priority++)
+      cond_broadcast (&bus_cond[direction][priority], &bus_lock);
+
 
    
   lock_release(&bus_lock);
